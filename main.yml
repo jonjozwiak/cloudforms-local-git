@@ -1,0 +1,77 @@
+---
+- hosts: localhost
+  gather_facts: true
+  vars: 
+    gitrepodir: "/var/git"
+    sslpassphrase: "changeme"
+    tempcertdir: "/var/www/miq/vmdb/certs/temp"
+    certcountry: "US"                   # 2 letter code
+    certstate: "North Carolina"         # State/Province
+    certcity: "Raleigh"                 # Locality/city
+    certcompany: "ManageIQ"             # Organization Name
+    certouname: "Licensing"             # Org Unit Name / Section
+    certcommonname: "{{ansible_fqdn}}"  # CloudForms Server FQDN
+    certemail: "jon@example.com"        # Email Address
+    deploy_demo: true    # deploys demo playbook to Ansible_Playbooks
+  tasks:
+  - name: create git repo directory
+    file: path={{ gitrepodir }} state=directory seuser=system_u serole=object_r setype=httpd_sys_content_t
+
+  - name: create temporary cert dir 
+    file: path={{ tempcertdir }} state=directory
+
+  - name: Generate Private pem file 
+    command: openssl genrsa -des3 -passout pass:{{ sslpassphrase }} -out {{ ansible_hostname }}.pem 1024
+      chdir={{ tempcertdir }}
+      creates={{ tempcertdir }}/{{ ansible_hostname }}.pem
+
+  - name: Generate Private key file
+    command: openssl rsa -in {{ ansible_hostname }}.pem -passin pass:{{ sslpassphrase }} -out {{ ansible_hostname }}.key
+      chdir={{ tempcertdir }}
+      creates={{ tempcertdir }}/{{ ansible_hostname }}.key
+
+  - name: Generate Cert Signing Request
+    command: openssl req -new -subj "/C={{certcountry}}/ST={{certstate}}/L={{certcity}}/O={{certcompany}}/OU={{certouname}}/CN={{certcommonname}}/emailAddress={{certemail}}" -key {{ ansible_hostname }}.key -out {{ ansible_hostname }}.csr
+      chdir={{ tempcertdir }}
+      creates={{ tempcertdir }}/{{ ansible_hostname }}.csr
+  
+  - name: Sign the cert
+    command: openssl x509 -req -days 365 -in {{ ansible_hostname }}.csr -signkey {{ ansible_hostname }}.key -out {{ ansible_hostname }}.crt
+      chdir={{ tempcertdir }}
+      creates={{ tempcertdir }}/{{ ansible_hostname }}.crt
+
+  - name: Copy crt to /var/www/miq/vmdb/certs
+    copy: src={{ tempcertdir }}/{{ ansible_hostname }}.crt dest=/var/www/miq/vmdb/certs/{{ ansible_hostname }}.crt remote_src=yes
+
+  - name: Copy key to /var/www/miq/vmdb/certs
+    copy: src={{ tempcertdir }}/{{ ansible_hostname }}.key dest=/var/www/miq/vmdb/certs/{{ ansible_hostname }}.key remote_src=yes
+
+  # LAZY!  sed in an Ansible script? tsk...
+  - name: Modify manageiq-https-application.conf for new cert file 
+    command: sed -i -e 's#^SSLCertificateFile.*#SSLCertificateFile /var/www/miq/vmdb/certs/{{ ansible_hostname }}.crt#' /etc/httpd/conf.d/manageiq-https-application.conf
+
+  - name: Modify manageiq-https-application.conf for new key file
+    command: sed -i -e 's#^SSLCertificateKeyFile.*#SSLCertificateKeyFile /var/www/miq/vmdb/certs/{{ ansible_hostname }}.key#' /etc/httpd/conf.d/manageiq-https-application.conf
+  
+  - name: Deploy manageiq git https 
+    template: src="post-manageiq-git-https.conf.j2" dest="/etc/httpd/conf.d/post-manageiq-git-https.conf" mode="0644" owner="root" group="root"
+
+  - name: Open firewall rule for git https 8443
+    firewalld: port=8443/tcp state=enabled permanent=yes zone=manageiq immediate=yes
+
+  - name: Copy cert to ca-trust anchors
+    copy: src=/var/www/miq/vmdb/certs/{{ ansible_hostname }}.crt dest=/etc/pki/ca-trust/source/anchors remote_src=yes
+
+  - name: Update CA trust
+    command: update-ca-trust extract
+
+  - name: Deploy Demo Playbooks (git clone https://github.com/jonnyfiveiq/Ansible_Playbooks.git)
+    git:
+      repo: https://github.com/jonnyfiveiq/Ansible_Playbooks.git
+      dest: "{{ gitrepodir }}/Ansible_Playbooks"
+    when: deploy_demo
+
+  - debug: msg="Once done, reboot your system and then you should be able to access git read-only at https://cloudforms_hostname:8443/git_repo_name"
+
+
+      

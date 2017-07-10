@@ -1,0 +1,58 @@
+## ManageIQ SSL Virtual Host Context
+
+LoadModule ssl_module modules/mod_ssl.so
+
+Listen 8443
+
+AddType application/x-x509-ca-cert .crt
+AddType application/x-pkcs7-crl    .crl
+
+SSLPassPhraseDialog  builtin
+
+SSLSessionCache         shmcb:/var/cache/mod_ssl/scache(512000)
+SSLSessionCacheTimeout  300
+
+Mutex default ssl-cache
+
+SSLRandomSeed startup file:/dev/urandom  256
+SSLRandomSeed connect builtin
+
+SSLCryptoDevice builtin
+
+<VirtualHost *:8443>
+KeepAlive on
+
+DocumentRoot /var/git
+
+ProxyPreserveHost on
+RequestHeader set X_FORWARDED_PROTO 'https'
+
+ErrorLog /var/www/miq/vmdb/log/apache/git_ssl_error.log
+TransferLog /var/www/miq/vmdb/log/apache/git_ssl_access.log
+LogLevel warn
+
+SSLEngine on
+SSLProtocol all -SSLv2 -SSLv3
+SSLCipherSuite ALL:!ADH:!EXPORT:!SSLv2:RC4+RSA:+HIGH:+MEDIUM:!LOW
+SSLCertificateFile /var/www/miq/vmdb/certs/{{ ansible_hostname }}.crt
+SSLCertificateKeyFile /var/www/miq/vmdb/certs/{{ ansible_hostname }}.key
+
+SetEnv GIT_PROJECT_ROOT {{ gitrepodir }}
+SetEnv GIT_HTTP_EXPORT_ALL
+ScriptAlias / /usr/libexec/git-core/git-http-backend/
+
+<Directory />
+    DAV On
+    Options +Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+    Allow from all
+    #Order allow,deny
+</Directory>
+
+
+CustomLog /var/www/miq/vmdb/log/apache/git_ssl_request.log \
+          "%t %h %{SSL_PROTOCOL}x %{SSL_CIPHER}x \"%r\" %b"
+
+</VirtualHost>
+
